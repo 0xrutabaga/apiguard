@@ -47,7 +47,10 @@ def signing_key_problem(key: str) -> str | None:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="APIGUARD_", extra="ignore")
+    # hide_input_in_errors keeps a rejected signing key out of the startup error message.
+    model_config = SettingsConfigDict(
+        env_prefix="APIGUARD_", extra="ignore", hide_input_in_errors=True
+    )
 
     environment: Literal["production", "development", "test"] = "production"
     database_url: str = "postgresql+psycopg://apiguard:apiguard@127.0.0.1:55431/apiguard"

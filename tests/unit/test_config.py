@@ -73,3 +73,10 @@ def test_cors_is_off_by_default() -> None:
 def test_signing_key_problem_accepts_random_keys() -> None:
     for _ in range(20):
         assert signing_key_problem(secrets.token_urlsafe(48)) is None
+
+
+def test_rejected_key_is_not_echoed_in_the_error() -> None:
+    weak = "tiny-weak-key-value"
+    with pytest.raises(ValidationError) as exc:
+        _settings(environment="production", jwt_signing_key=weak)
+    assert weak not in str(exc.value)
