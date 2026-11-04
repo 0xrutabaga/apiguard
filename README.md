@@ -244,7 +244,7 @@ PostgreSQL 17 service container.
 - Every denied request writes one audit row, and only login, refresh and registration are rate
   limited. An authenticated user can therefore grow the audit table by probing; a general
   per-user request limit is not built.
-- The Examples below register `carol@example.com`; running them a second time against the same
+- The Examples section registers `carol@example.com`; running it a second time against the same
   database answers 409 for that step.
 - The append-only trigger does not stop `TRUNCATE` or a superuser disabling triggers; database
   privileges for the application role have to do that (see the threat model).
