@@ -1,7 +1,7 @@
 """Glue between route handlers and the policy: tenant-scoped loading and enforcement.
 
 Handlers never query tenant tables by primary key alone. ``load_project`` and
-``load_document`` always filter by the organisation in the URL (and the document loader by
+``authorize_document`` always filter by the organisation in the URL (and the document loader by
 project too), so a handler that forgot an authorization call would still get 404 for another
 tenant's id instead of the row.
 """
@@ -43,6 +43,59 @@ def resolve_actor(session: Session, user_id: uuid.UUID, org_id: uuid.UUID) -> Ac
     return Actor(user_id=user_id, org_id=org_id, role=Role(role) if role else None)
 
 
+# Recorded for every 404 the policy layer produces, whether the resource is missing or only
+# invisible to the caller. The policy's own reason is not stored for 404s: a caller can read
+# their own events (GET /me/audit-events), and "not visible" versus "missing" would tell them
+# that an id exists.
+NOT_VISIBLE_REASON = "not found or not visible"
+
+
+def _record_denial(
+    *,
+    actor: Actor,
+    action: Action | str,
+    session_factory: sessionmaker[Session],
+    ctx: RequestContext,
+    visible: bool,
+    reason: str,
+    target: dict[str, str] | None,
+) -> None:
+    record_event(
+        session_factory,
+        EventType.PERMISSION_DENIED,
+        ctx,
+        actor_user_id=actor.user_id,
+        org_id=actor.org_id,
+        detail={
+            "action": str(action),
+            "reason": reason if visible else NOT_VISIBLE_REASON,
+            "status": 403 if visible else 404,
+            **(target or {}),
+        },
+    )
+
+
+def deny_not_found(
+    *,
+    actor: Actor,
+    action: Action | str,
+    session_factory: sessionmaker[Session],
+    ctx: RequestContext,
+    target: dict[str, str] | None = None,
+) -> HTTPException:
+    """Audit a 404 exactly like an invisible-resource denial and return the exception."""
+    _record_denial(
+        actor=actor,
+        action=action,
+        session_factory=session_factory,
+        ctx=ctx,
+        visible=False,
+        reason=NOT_VISIBLE_REASON,
+        target=target,
+    )
+    return not_found()
+
+
 def enforce(
     decision: Decision,
     *,
@@ -55,18 +108,14 @@ def enforce(
     """Raise 404 (invisible) or 403 (visible, not allowed) and audit the denial."""
     if decision.allowed:
         return
-    record_event(
-        session_factory,
-        EventType.PERMISSION_DENIED,
-        ctx,
-        actor_user_id=actor.user_id,
-        org_id=actor.org_id,
-        detail={
-            "action": str(action),
-            "reason": decision.reason,
-            "status": 403 if decision.visible else 404,
-            **(target or {}),
-        },
+    _record_denial(
+        actor=actor,
+        action=action,
+        session_factory=session_factory,
+        ctx=ctx,
+        visible=decision.visible,
+        reason=decision.reason,
+        target=target,
     )
     if not decision.visible:
         raise not_found()
@@ -115,14 +164,24 @@ def load_project(session: Session, org_id: uuid.UUID, project_id: uuid.UUID) -> 
     return project
 
 
-def load_document(
+def authorize_document(
     session: Session,
+    actor: Actor,
+    action: Action,
     org_id: uuid.UUID,
     project_id: uuid.UUID,
     document_id: uuid.UUID,
     *,
+    session_factory: sessionmaker[Session],
+    ctx: RequestContext,
     for_update: bool = False,
 ) -> Document:
+    """Load a document in the caller's tenant and authorize ``action`` on it.
+
+    A document that does not exist and one the caller may not see produce the same 404 and the
+    same audit row, so neither the response nor the caller's own audit trail reveals existence.
+    """
+    target = {"document_id": str(document_id)}
     stmt = select(Document).where(
         Document.id == document_id,
         Document.org_id == org_id,
@@ -132,7 +191,17 @@ def load_document(
         stmt = stmt.with_for_update()
     document = session.execute(stmt).scalar_one_or_none()
     if document is None:
-        raise not_found()
+        raise deny_not_found(
+            actor=actor, action=action, session_factory=session_factory, ctx=ctx, target=target
+        )
+    authorize(
+        actor,
+        action,
+        document_resource(session, actor, document),
+        session_factory=session_factory,
+        ctx=ctx,
+        target=target,
+    )
     return document
 
 

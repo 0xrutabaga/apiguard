@@ -172,3 +172,31 @@ def test_removed_member_loses_access_immediately(client: TestClient, world: Worl
     )
     assert response.status_code == 204
     assert client.get(world.doc_a_url, headers=editor).status_code == 404
+
+
+def test_audit_trail_does_not_reveal_whether_an_invisible_document_exists(
+    client: TestClient, world: World
+) -> None:
+    """The caller can read their own audit events, so those must not be an existence oracle.
+
+    a_editor2 is a member of org A but cannot see doc_a. Probing doc_a and a random id must
+    leave events that differ only in the id the caller supplied themselves.
+    """
+    headers = world.auth("a_editor2")
+    missing_id = uuid.uuid4()
+    for doc in (world.doc_a, missing_id):
+        response = client.get(world.doc_url(world.org_a, world.proj_a, doc), headers=headers)
+        assert response.status_code == 404
+    events = client.get("/me/audit-events", headers=headers).json()
+    denials = [e for e in reversed(events) if e["event_type"] == "permission_denied"]
+    assert [e["detail"]["document_id"] for e in denials] == [str(world.doc_a), str(missing_id)]
+    stripped = [{k: v for k, v in e["detail"].items() if k != "document_id"} for e in denials]
+    assert (
+        stripped[0]
+        == stripped[1]
+        == {
+            "action": "document.read",
+            "reason": "not found or not visible",
+            "status": 404,
+        }
+    )

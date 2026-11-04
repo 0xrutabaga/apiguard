@@ -8,14 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import select
 
-from apiguard.authz import (
-    authorize,
-    authorize_org,
-    document_resource,
-    load_document,
-    load_project,
-    not_found,
-)
+from apiguard.authz import authorize_document, authorize_org, load_project, not_found
 from apiguard.deps import ContextDep, CurrentUser, SessionDep, SessionFactoryDep
 from apiguard.models import Document, DocumentShare, Membership, Project
 from apiguard.policy import Action, visible_documents_clause
@@ -185,14 +178,15 @@ def get_document(
     actor = authorize_org(
         session, user.id, org_id, Action.PROJECT_READ, session_factory=factory, ctx=ctx
     )
-    document = load_document(session, org_id, project_id, document_id)
-    authorize(
+    document = authorize_document(
+        session,
         actor,
         Action.DOCUMENT_READ,
-        document_resource(session, actor, document),
+        org_id,
+        project_id,
+        document_id,
         session_factory=factory,
         ctx=ctx,
-        target={"document_id": str(document_id)},
     )
     return document
 
@@ -211,14 +205,16 @@ def update_document(
     actor = authorize_org(
         session, user.id, org_id, Action.PROJECT_READ, session_factory=factory, ctx=ctx
     )
-    document = load_document(session, org_id, project_id, document_id, for_update=True)
-    authorize(
+    document = authorize_document(
+        session,
         actor,
         Action.DOCUMENT_UPDATE,
-        document_resource(session, actor, document),
+        org_id,
+        project_id,
+        document_id,
         session_factory=factory,
         ctx=ctx,
-        target={"document_id": str(document_id)},
+        for_update=True,
     )
     changes = body.model_dump(exclude_unset=True, exclude_none=True)
     if not changes:
@@ -244,14 +240,16 @@ def delete_document(
     actor = authorize_org(
         session, user.id, org_id, Action.PROJECT_READ, session_factory=factory, ctx=ctx
     )
-    document = load_document(session, org_id, project_id, document_id, for_update=True)
-    authorize(
+    document = authorize_document(
+        session,
         actor,
         Action.DOCUMENT_DELETE,
-        document_resource(session, actor, document),
+        org_id,
+        project_id,
+        document_id,
         session_factory=factory,
         ctx=ctx,
-        target={"document_id": str(document_id)},
+        for_update=True,
     )
     session.delete(document)
     session.commit()
@@ -272,14 +270,15 @@ def share_document(
     actor = authorize_org(
         session, user.id, org_id, Action.PROJECT_READ, session_factory=factory, ctx=ctx
     )
-    document = load_document(session, org_id, project_id, document_id)
-    authorize(
+    authorize_document(
+        session,
         actor,
         Action.DOCUMENT_SHARE,
-        document_resource(session, actor, document),
+        org_id,
+        project_id,
+        document_id,
         session_factory=factory,
         ctx=ctx,
-        target={"document_id": str(document_id)},
     )
     if session.get(Membership, (org_id, share_user_id)) is None:
         # Shares never cross the tenant boundary; the schema enforces this as well.
@@ -316,14 +315,15 @@ def unshare_document(
     actor = authorize_org(
         session, user.id, org_id, Action.PROJECT_READ, session_factory=factory, ctx=ctx
     )
-    document = load_document(session, org_id, project_id, document_id)
-    authorize(
+    authorize_document(
+        session,
         actor,
         Action.DOCUMENT_SHARE,
-        document_resource(session, actor, document),
+        org_id,
+        project_id,
+        document_id,
         session_factory=factory,
         ctx=ctx,
-        target={"document_id": str(document_id)},
     )
     share = session.get(DocumentShare, (document_id, share_user_id))
     if share is None:
