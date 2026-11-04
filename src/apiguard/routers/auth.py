@@ -35,7 +35,7 @@ def _too_many(retry_after: int) -> HTTPException:
     )
 
 
-def _apply_limits(
+def apply_limits(
     limiter: RateLimiter,
     limits: list[Limit],
     factory: SessionFactoryDep,
@@ -45,13 +45,14 @@ def _apply_limits(
     try:
         limiter.hit_all(limits)
     except RateLimitExceeded as exc:
-        kind = "ip" if ":ip:" in exc.key else "account"
-        record_event(
-            factory,
-            EventType.RATE_LIMITED,
-            ctx,
-            detail={"endpoint": endpoint, "limit": kind, "retry_after": exc.retry_after},
-        )
+        if exc.first_in_window:
+            kind = "ip" if ":ip:" in exc.key else "account"
+            record_event(
+                factory,
+                EventType.RATE_LIMITED,
+                ctx,
+                detail={"endpoint": endpoint, "limit": kind, "retry_after": exc.retry_after},
+            )
         raise _too_many(exc.retry_after) from None
 
 
@@ -68,7 +69,7 @@ def register(
     limiter: RateLimiterDep,
     ctx: ContextDep,
 ) -> User:
-    _apply_limits(
+    apply_limits(
         limiter,
         [Limit(ip_key("register", ctx.client_ip), settings.register_limit_per_ip)],
         factory,
@@ -101,7 +102,7 @@ def login(
     ctx: ContextDep,
 ) -> TokenPair:
     email = normalise_email(body.email)
-    _apply_limits(
+    apply_limits(
         limiter,
         [
             Limit(ip_key("login", ctx.client_ip), settings.login_limit_per_ip),
@@ -156,7 +157,7 @@ def refresh_tokens(
     limiter: RateLimiterDep,
     ctx: ContextDep,
 ) -> TokenPair:
-    _apply_limits(
+    apply_limits(
         limiter,
         [Limit(ip_key("refresh", ctx.client_ip), settings.refresh_limit_per_ip)],
         factory,
@@ -165,7 +166,7 @@ def refresh_tokens(
     )
     existing = refresh.family_of(session, body.refresh_token)
     if existing is not None:
-        _apply_limits(
+        apply_limits(
             limiter,
             [Limit(f"refresh:user:{existing.user_id}", settings.refresh_limit_per_account)],
             factory,

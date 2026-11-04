@@ -26,10 +26,13 @@ from apiguard.models import RateLimitCounter
 
 
 class RateLimitExceeded(Exception):
-    def __init__(self, key: str, retry_after: int) -> None:
+    def __init__(self, key: str, retry_after: int, *, first_in_window: bool) -> None:
         super().__init__(key)
         self.key = key
         self.retry_after = retry_after
+        # True only for the first rejected attempt of this key in this window. Callers audit
+        # only that one, so a flood of rejected requests writes one audit row per key/window.
+        self.first_in_window = first_in_window
 
 
 @dataclass(frozen=True)
@@ -74,16 +77,17 @@ class RateLimiter:
         )
         with self._session_factory.begin() as session:
             count = session.execute(stmt).scalar_one()
-            # Opportunistic cleanup of this key's finished windows keeps the table small.
+            # Delete every finished window, of every key (indexed on window_start). The table
+            # therefore only holds rows for the current window: at most one per distinct key
+            # seen in the last ``window_seconds``.
             session.execute(
-                delete(RateLimitCounter).where(
-                    RateLimitCounter.key == limit.key,
-                    RateLimitCounter.window_start < window_start,
-                )
+                delete(RateLimitCounter).where(RateLimitCounter.window_start < window_start)
             )
         if count > limit.max_attempts:
             retry_after = max(1, math.ceil(window_start + self._window - now))
-            raise RateLimitExceeded(limit.key, retry_after)
+            raise RateLimitExceeded(
+                limit.key, retry_after, first_in_window=count == limit.max_attempts + 1
+            )
 
     def hit_all(self, limits: list[Limit]) -> None:
         """Count the attempt against every limit, then raise for the first exceeded one.
@@ -96,7 +100,8 @@ class RateLimiter:
             try:
                 self.hit(limit)
             except RateLimitExceeded as exc:
-                if exceeded is None or exc.retry_after > exceeded.retry_after:
+                # Prefer a limit crossed just now, so its one audit row gets written.
+                if exceeded is None or (exc.first_in_window and not exceeded.first_in_window):
                     exceeded = exc
         if exceeded is not None:
             raise exceeded

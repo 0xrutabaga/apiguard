@@ -84,3 +84,28 @@ def test_concurrent_hits_are_counted_exactly(db: sessionmaker[Session]) -> None:
         thread.join(timeout=30)
     assert outcomes.count(True) == 5
     assert outcomes.count(False) == 15
+
+
+def test_finished_windows_of_other_keys_are_pruned_too(db: sessionmaker[Session]) -> None:
+    """New keys (fresh emails, IPs) must not accumulate: every hit prunes all old windows."""
+    clock = FakeClock(999_960.0)
+    limiter = RateLimiter(db, window_seconds=60, clock=clock)
+    for i in range(50):
+        limiter.hit(Limit(f"login:acct:{i}", 100))
+    clock.now += 60
+    limiter.hit(Limit("login:acct:new", 100))
+    with db() as session:
+        keys = session.execute(select(RateLimitCounter.key)).scalars().all()
+    assert keys == ["login:acct:new"]
+
+
+def test_only_the_first_rejection_in_a_window_is_flagged(db: sessionmaker[Session]) -> None:
+    limiter = RateLimiter(db, window_seconds=60, clock=FakeClock(999_960.0))
+    limit = Limit("k", 1)
+    limiter.hit(limit)
+    flags = []
+    for _ in range(3):
+        with pytest.raises(RateLimitExceeded) as exc:
+            limiter.hit(limit)
+        flags.append(exc.value.first_in_window)
+    assert flags == [True, False, False]
