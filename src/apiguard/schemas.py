@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints
 
 from apiguard.policy import Role, SharePermission
 
@@ -21,18 +21,23 @@ MIN_PASSWORD_LENGTH = 12
 MAX_PASSWORD_LENGTH = 128
 
 
+# Names and titles are trimmed. Passwords are deliberately not: leading or trailing spaces are
+# part of the secret, and register and login must treat the value byte for byte the same.
+Trimmed = Annotated[str, StringConstraints(strip_whitespace=True)]
+
+
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    model_config = ConfigDict(extra="forbid")
 
 
 class RegisterRequest(StrictModel):
     email: EmailStr = Field(max_length=320)
     password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
-    display_name: str = Field(min_length=1, max_length=100)
+    display_name: Trimmed = Field(min_length=1, max_length=100)
 
 
 class LoginRequest(StrictModel):
-    email: str = Field(min_length=1, max_length=320)
+    email: Trimmed = Field(min_length=1, max_length=320)
     password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
 
 
@@ -56,7 +61,7 @@ class UserOut(BaseModel):
 
 
 class OrgCreate(StrictModel):
-    name: str = Field(min_length=1, max_length=100)
+    name: Trimmed = Field(min_length=1, max_length=100)
 
 
 class OrgOut(BaseModel):
@@ -87,11 +92,11 @@ class MemberOut(BaseModel):
 
 
 class ProjectCreate(StrictModel):
-    name: str = Field(min_length=1, max_length=100)
+    name: Trimmed = Field(min_length=1, max_length=100)
 
 
 class ProjectUpdate(StrictModel):
-    name: str = Field(min_length=1, max_length=100)
+    name: Trimmed = Field(min_length=1, max_length=100)
 
 
 class ProjectOut(BaseModel):
@@ -103,12 +108,12 @@ class ProjectOut(BaseModel):
 
 
 class DocumentCreate(StrictModel):
-    title: str = Field(min_length=1, max_length=200)
+    title: Trimmed = Field(min_length=1, max_length=200)
     body: str = Field(default="", max_length=100_000)
 
 
 class DocumentUpdate(StrictModel):
-    title: str | None = Field(default=None, min_length=1, max_length=200)
+    title: Trimmed | None = Field(default=None, min_length=1, max_length=200)
     body: str | None = Field(default=None, max_length=100_000)
 
 

@@ -144,3 +144,29 @@ def test_expired_refresh_token(client: TestClient, db: sessionmaker[Session]) ->
         row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
     response = client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
     assert response.status_code == 401
+
+
+def test_password_whitespace_is_significant(client: TestClient) -> None:
+    padded = "  padded password with spaces  "
+    response = client.post(
+        "/auth/register",
+        json={"email": "pad@example.com", "password": padded, "display_name": "  Pad  "},
+    )
+    assert response.status_code == 201
+    assert response.json()["display_name"] == "Pad"  # names are trimmed
+
+    def status(password: str) -> int:
+        return client.post(
+            "/auth/login", json={"email": " pad@example.com ", "password": password}
+        ).status_code
+
+    assert status(padded) == 200
+    assert status(padded.strip()) == 401
+
+
+def test_blank_names_are_rejected_after_trimming(client: TestClient) -> None:
+    response = client.post(
+        "/auth/register",
+        json={"email": "blank@example.com", "password": PASSWORD, "display_name": "   "},
+    )
+    assert response.status_code == 422
