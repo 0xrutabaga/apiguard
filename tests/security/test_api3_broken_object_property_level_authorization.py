@@ -155,3 +155,38 @@ def test_member_listing_shows_only_profile_fields(client: TestClient, world: Wor
     members = client.get(f"/orgs/{world.org_a}/members", headers=world.auth("a_viewer")).json()
     assert members
     assert all(set(m) == {"user_id", "email", "display_name", "role"} for m in members)
+
+
+# --- membership by invitation ----------------------------------------------------------
+
+
+def test_invitation_response_does_not_reveal_whether_an_account_exists(
+    client: TestClient, world: World
+) -> None:
+    """Any user can create an org and invite; that must not become an account oracle."""
+    attacker = world.auth("outsider")
+    org = client.post("/orgs", json={"name": "probe"}, headers=attacker).json()
+
+    def invite(email: str) -> dict[str, object]:
+        response = client.post(
+            f"/orgs/{org['id']}/invitations",
+            json={"email": email, "role": "viewer"},
+            headers=attacker,
+        )
+        assert response.status_code == 202
+        body: dict[str, object] = response.json()
+        return body
+
+    registered = invite("a_owner@example.com")
+    unregistered = invite("nobody-here@example.com")
+    assert (
+        set(registered)
+        == set(unregistered)
+        == {"id", "org_id", "email", "role", "expires_at", "token"}
+    )
+    for body in (registered, unregistered):
+        assert "display_name" not in body and "user_id" not in body
+    # And the victim did not become a member of the attacker's organisation.
+    assert client.get("/orgs", headers=world.auth("a_owner")).json() == [
+        {"id": str(world.org_a), "name": "Org A", "role": "owner"}
+    ]

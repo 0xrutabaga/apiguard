@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     refresh_limit_per_ip: int = Field(default=30, ge=1)
     refresh_limit_per_account: int = Field(default=10, ge=1)
     register_limit_per_ip: int = Field(default=10, ge=1)
+    invite_limit_per_actor: int = Field(default=20, ge=1)
+    invitation_ttl_seconds: int = Field(default=7 * 24 * 3600, ge=60)
 
     # Comma-separated origins. Empty disables CORS entirely.
     cors_origins: str = ""

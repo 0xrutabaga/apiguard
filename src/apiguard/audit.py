@@ -31,6 +31,8 @@ class EventType(StrEnum):
     REFRESH_TOKEN_REUSED = "refresh_token_reused"  # noqa: S105 - event name, not a secret
     LOGOUT = "logout"
     PERMISSION_DENIED = "permission_denied"
+    INVITATION_CREATED = "invitation_created"
+    INVITATION_REVOKED = "invitation_revoked"
     MEMBER_ADDED = "member_added"
     MEMBER_REMOVED = "member_removed"
     ROLE_CHANGED = "role_changed"

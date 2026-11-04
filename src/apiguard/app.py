@@ -19,7 +19,7 @@ from apiguard.db import build_engine, build_session_factory
 from apiguard.deps import SessionDep
 from apiguard.middleware import RequestIdMiddleware, SecurityHeadersMiddleware
 from apiguard.ratelimit import RateLimiter
-from apiguard.routers import auth, orgs, projects
+from apiguard.routers import auth, invitations, orgs, projects
 
 logger = logging.getLogger("apiguard")
 
@@ -78,6 +78,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(orgs.router)
+    app.include_router(invitations.router)
     app.include_router(projects.router)
 
     # Middleware added last runs first: request id wraps everything, including CORS.

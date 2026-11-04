@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from apiguard.models import AuditEvent, RateLimitCounter
+from apiguard.tokens import issue_access_token
 from tests.support import TEST_PASSWORD, World
 
 
@@ -130,3 +131,36 @@ def test_oversized_fields_are_rejected(client: TestClient, world: World) -> None
 def test_oversized_password_is_rejected_before_hashing(client: TestClient) -> None:
     response = client.post("/auth/login", json={"email": "a@example.com", "password": "x" * 10_000})
     assert response.status_code == 422
+
+
+def test_invitations_are_limited_per_actor(
+    app_factory: Callable[..., TestClient], world: World
+) -> None:
+    client = app_factory(invite_limit_per_actor=3)
+    token = issue_access_token(client.app.state.settings, world.uid("outsider"))
+    headers = {"Authorization": f"Bearer {token}"}
+    org = client.post("/orgs", json={"name": "probe"}, headers=headers).json()
+    statuses = [
+        client.post(
+            f"/orgs/{org['id']}/invitations",
+            json={"email": f"probe{i}@example.com", "role": "viewer"},
+            headers=headers,
+        ).status_code
+        for i in range(4)
+    ]
+    assert statuses == [202, 202, 202, 429]
+
+
+def test_a_flood_of_rejected_requests_writes_one_audit_row_per_window(
+    app_factory: Callable[..., TestClient], db: sessionmaker[Session]
+) -> None:
+    client = app_factory(login_limit_per_ip=2, login_limit_per_account=1000)
+    statuses = [_login(client, f"flood{i}@example.com") for i in range(30)]
+    assert statuses.count(429) == 28
+    with db() as session:
+        events = (
+            session.execute(select(AuditEvent).where(AuditEvent.event_type == "rate_limited"))
+            .scalars()
+            .all()
+        )
+    assert len(events) == 1

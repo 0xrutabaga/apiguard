@@ -75,9 +75,31 @@ class OrgWithRole(OrgOut):
     role: Role
 
 
-class MemberAdd(StrictModel):
+class InvitationCreate(StrictModel):
     email: EmailStr = Field(max_length=320)
     role: Role
+
+
+class InvitationOut(BaseModel):
+    """What an inviter sees. It never says whether the email has an account."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    org_id: uuid.UUID
+    email: str
+    role: Role
+    expires_at: datetime
+
+
+class InvitationCreated(InvitationOut):
+    """Returned once to the inviter. The token is stored only as a hash."""
+
+    token: str
+
+
+class AcceptInvitation(StrictModel):
+    token: str = Field(min_length=1, max_length=200)
 
 
 class MemberUpdate(StrictModel):

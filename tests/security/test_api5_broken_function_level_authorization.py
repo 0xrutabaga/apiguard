@@ -96,10 +96,13 @@ def test_non_managers_cannot_manage_members(
 ) -> None:
     headers = world.auth(actor)
     members = f"/orgs/{world.org_a}/members"
-    add = client.post(
-        members, json={"email": "outsider@example.com", "role": "viewer"}, headers=headers
+    invite = client.post(
+        f"/orgs/{world.org_a}/invitations",
+        json={"email": "outsider@example.com", "role": "viewer"},
+        headers=headers,
     )
-    assert add.status_code == 403
+    assert invite.status_code == 403
+    assert client.get(f"/orgs/{world.org_a}/invitations", headers=headers).status_code == 403
     promote = client.patch(f"{members}/{world.uid(actor)}", json={"role": "owner"}, headers=headers)
     assert promote.status_code == 403
     remove = client.delete(f"{members}/{world.uid('a_admin')}", headers=headers)
@@ -126,12 +129,12 @@ def test_admin_cannot_grant_admin_or_owner(
     response = client.patch(url, json={"role": new_role}, headers=world.auth("a_admin"))
     assert response.status_code == 403
     assert _role(db, world, "a_viewer") == "viewer"
-    add = client.post(
-        f"/orgs/{world.org_a}/members",
+    invite = client.post(
+        f"/orgs/{world.org_a}/invitations",
         json={"email": "outsider@example.com", "role": new_role},
         headers=world.auth("a_admin"),
     )
-    assert add.status_code == 403
+    assert invite.status_code == 403
 
 
 def test_admin_cannot_demote_or_remove_owner(

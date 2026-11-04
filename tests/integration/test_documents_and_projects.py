@@ -132,26 +132,21 @@ def test_deleting_a_project_deletes_its_documents(
         assert session.get(Document, world.doc_b) is not None
 
 
-def test_member_management(client: TestClient, world: World, db: sessionmaker[Session]) -> None:
+def test_promote_and_remove_member(
+    client: TestClient, world: World, db: sessionmaker[Session]
+) -> None:
     members = f"/orgs/{world.org_a}/members"
     owner = world.auth("a_owner")
-    added = client.post(
-        members, json={"email": "outsider@example.com", "role": "viewer"}, headers=owner
-    )
-    assert added.status_code == 201
-    again = client.post(
-        members, json={"email": "outsider@example.com", "role": "viewer"}, headers=owner
-    )
-    assert again.status_code == 409
-    unknown = client.post(
-        members, json={"email": "ghost@example.com", "role": "viewer"}, headers=owner
-    )
-    assert unknown.status_code == 404
     promoted = client.patch(
-        f"{members}/{world.uid('outsider')}", json={"role": "admin"}, headers=owner
+        f"{members}/{world.uid('a_viewer')}", json={"role": "admin"}, headers=owner
     )
     assert promoted.json()["role"] == "admin"
-    assert client.get(f"/orgs/{world.org_a}", headers=world.auth("outsider")).status_code == 200
+    assert client.delete(f"{members}/{world.uid('a_viewer')}", headers=owner).status_code == 204
+    assert client.get(f"/orgs/{world.org_a}", headers=world.auth("a_viewer")).status_code == 404
+    missing = client.patch(
+        f"{members}/{world.uid('outsider')}", json={"role": "admin"}, headers=owner
+    )
+    assert missing.status_code == 404
 
 
 def test_last_owner_cannot_leave_or_be_demoted(

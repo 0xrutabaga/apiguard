@@ -176,8 +176,40 @@ class RefreshToken(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class Invitation(Base):
+    """A pending offer of membership. It becomes a Membership only when the invitee accepts.
+
+    Invitations are keyed by email, not user id, so creating one does not depend on (and does
+    not reveal) whether that email has an account. Accepting needs the one-time token given to
+    the inviter (stored here as SHA-256) *and* an account with that email; the token is what
+    proves the invitee received it, because registration does not verify email ownership.
+    """
+
+    __tablename__ = "invitations"
+    __table_args__ = (
+        UniqueConstraint("org_id", "email"),
+        CheckConstraint(f"role IN {ROLE_VALUES!r}", name="role_valid"),
+        Index("ix_invitations_email", "email"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    token_hash: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False, unique=True)
+    invited_by: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = _now_column()
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class RateLimitCounter(Base):
     __tablename__ = "rate_limit_counters"
+    # Lets every hit prune finished windows of all keys, not only its own.
+    __table_args__ = (Index("ix_rate_limit_counters_window_start", "window_start"),)
 
     key: Mapped[str] = mapped_column(String(200), primary_key=True)
     window_start: Mapped[int] = mapped_column(BigInteger, primary_key=True)

@@ -13,10 +13,8 @@ from apiguard.authz import authorize_org, enforce, not_found
 from apiguard.deps import ContextDep, CurrentUser, SessionDep, SessionFactoryDep
 from apiguard.models import AuditEvent, Membership, Organization, User
 from apiguard.policy import Action, Role, decide_membership_change
-from apiguard.routers.auth import normalise_email
 from apiguard.schemas import (
     AuditEventOut,
-    MemberAdd,
     MemberOut,
     MemberUpdate,
     OrgCreate,
@@ -120,49 +118,6 @@ def list_members(
         .order_by(Membership.created_at)
     ).all()
     return [_member_out(u, role) for u, role in rows]
-
-
-@router.post(
-    "/orgs/{org_id}/members", status_code=status.HTTP_201_CREATED, response_model=MemberOut
-)
-def add_member(
-    org_id: uuid.UUID,
-    body: MemberAdd,
-    user: CurrentUser,
-    session: SessionDep,
-    factory: SessionFactoryDep,
-    ctx: ContextDep,
-) -> MemberOut:
-    actor = authorize_org(
-        session, user.id, org_id, Action.MEMBER_ADD, session_factory=factory, ctx=ctx
-    )
-    enforce(
-        decide_membership_change(actor.role, target_role=None, new_role=body.role),
-        actor=actor,
-        action=Action.MEMBER_ADD,
-        session_factory=factory,
-        ctx=ctx,
-        target={"new_role": body.role.value},
-    )
-    target = session.execute(
-        select(User).where(User.email == normalise_email(str(body.email)))
-    ).scalar_one_or_none()
-    if target is None:
-        # Only owners/admins reach this point, and only for their own organisation.
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "no user with that email")
-    if session.get(Membership, (org_id, target.id)) is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "already a member")
-    session.add(Membership(org_id=org_id, user_id=target.id, role=body.role.value))
-    add_event(
-        session,
-        EventType.MEMBER_ADDED,
-        ctx,
-        actor_user_id=user.id,
-        org_id=org_id,
-        detail={"user_id": str(target.id), "role": body.role.value},
-    )
-    session.commit()
-    return _member_out(target, body.role.value)
 
 
 def _load_membership(session: SessionDep, org_id: uuid.UUID, user_id: uuid.UUID) -> Membership:

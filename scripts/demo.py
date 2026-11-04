@@ -4,9 +4,10 @@
     uv run python scripts/demo.py
 
 The script applies migrations, starts uvicorn on a free local port, then drives the HTTP API:
-two organisations, a cross-tenant read (404), a viewer edit (403), a failed login, refresh
-token reuse, and finally prints the audit events those actions produced. Every step checks the
-status code it expects and the script exits non-zero if any check fails.
+two organisations, an invitation accepted by the invitee, a cross-tenant read (404), a
+viewer edit (403), a failed login, refresh token reuse, and finally prints the audit events
+those actions produced. Every step checks the status code it expects and the script exits
+non-zero if any check fails.
 
 Pass --base-url to run the same scenario against a server you started yourself (migrations
 are then your responsibility). Users get a random suffix, so the demo can be re-run.
@@ -147,19 +148,35 @@ def scenario(api: httpx.Client) -> None:
         201,
     ).json()
     doc_url = f"/orgs/{acme['id']}/projects/{project['id']}/documents/{doc['id']}"
-    victor_member = check(
-        "alice adds victor to Acme as viewer",
+    invitation = check(
+        "alice invites victor's email to Acme as viewer",
         api.post(
-            f"/orgs/{acme['id']}/members",
+            f"/orgs/{acme['id']}/invitations",
             json={"email": emails["victor"], "role": "viewer"},
             headers=alice,
         ),
-        201,
+        202,
     ).json()
+    check(
+        "victor is not a member before accepting",
+        api.get(f"/orgs/{acme['id']}", headers=victor),
+        404,
+    )
+    check(
+        "bob cannot use the invitation token (wrong email)",
+        api.post("/invitations/accept", json={"token": invitation["token"]}, headers=bob),
+        404,
+    )
+    check(
+        "victor accepts with the token alice passed on",
+        api.post("/invitations/accept", json={"token": invitation["token"]}, headers=victor),
+        201,
+    )
+    victor_id = api.get("/me", headers=victor).json()["id"]
     check(
         "alice shares the document with victor (read)",
         api.put(
-            f"{doc_url}/shares/{victor_member['user_id']}",
+            f"{doc_url}/shares/{victor_id}",
             json={"permission": "read"},
             headers=alice,
         ),
