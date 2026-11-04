@@ -30,8 +30,9 @@ a specific member of the same organisation with `read` or `edit` permission.
 | Property allow-lists | request models use `extra="forbid"`; `org_id`, `owner_id`, `role`, `password_hash` cannot be set from a body | `src/apiguard/schemas.py` |
 | Passwords | Argon2id via argon2-cffi (library defaults, RFC 9106 low-memory profile); unknown emails still cost one verification | `src/apiguard/passwords.py` |
 | Access tokens | HS256 JWT via PyJWT, algorithm allow-list `["HS256"]`, required `exp iat nbf iss aud sub jti`, `typ=access`, key from env; identity only, roles are read from the database per request | `src/apiguard/tokens.py` |
-| Refresh tokens | opaque 256-bit tokens, stored as SHA-256, rotated on every use; replaying a used token revokes the whole family; row lock serialises concurrent refreshes | `src/apiguard/refresh.py` |
-| Rate limiting | fixed-window counters in PostgreSQL for login (per IP and per account), refresh (per IP and per account) and registration (per IP); 429 with `Retry-After` | `src/apiguard/ratelimit.py`, `routers/auth.py` |
+| Refresh tokens | opaque 256-bit tokens, stored as SHA-256, rotated on every use; replaying a used token revokes the whole family; a row lock serialises concurrent refreshes, so two simultaneous refreshes with one token also revoke the family (logging the user out) | `src/apiguard/refresh.py` |
+| Membership | joining an organisation needs an invitation the invitee accepts with a one-time token and an account with the invited email; creating an invitation looks nothing up and returns the same fields for any email | `src/apiguard/routers/invitations.py` |
+| Rate limiting | fixed-window counters in PostgreSQL for login (per IP and per account), refresh (per IP and per account), registration (per IP), invitations and accepts (per user); 429 with `Retry-After`; one `rate_limited` audit row per key per window; every hit deletes finished windows of all keys | `src/apiguard/ratelimit.py`, `routers/auth.py` |
 | Audit log | security events with request id and client IP; a trigger rejects UPDATE and DELETE | `src/apiguard/audit.py`, migration |
 | Configuration | pydantic-settings; refuses to start with a short, low-variety or placeholder signing key outside test mode; CORS off and API docs off unless configured | `src/apiguard/config.py`, `app.py` |
 | Headers | `nosniff`, `X-Frame-Options: DENY`, `Cache-Control: no-store`, a deny-all CSP, HSTS, request id echo | `src/apiguard/middleware.py` |
@@ -51,7 +52,7 @@ flowchart LR
         mw["RequestIdMiddleware<br/>SecurityHeadersMiddleware<br/>CORS only if configured"]
         routes["routers: auth, orgs, projects"]
         user["deps.get_current_user<br/>tokens.decode_access_token"]
-        authz["authz: resolve_actor,<br/>load_project / load_document,<br/>authorize / enforce"]
+        authz["authz: resolve_actor,<br/>load_project, authorize_document,<br/>authorize / enforce"]
         policy["policy.decide<br/>policy.visible_documents_clause"]
         rl["ratelimit.RateLimiter"]
         refresh["refresh.rotate"]
@@ -78,7 +79,7 @@ A request for `/orgs/{org_id}/projects/{project_id}/documents/{document_id}`:
 1. `get_current_user` validates the bearer token and loads the user.
 2. `authorize_org` looks up the caller's membership in `org_id`; a non-member is denied as
    invisible (404) and the denial is written to the audit log in its own transaction.
-3. `load_document` selects the document by id *and* organisation *and* project, so an id from
+3. `authorize_document` selects the document by id *and* organisation *and* project, so an id from
    another tenant or another project is 404 even before the policy runs.
 4. `authorize` asks `policy.decide` about this action on this document (ownership, share,
    role ceiling) and turns the decision into 404, 403 or continue.
@@ -135,10 +136,12 @@ Authentication
   [ok  ] alice's new refresh token is revoked with the family       -> 401 (expected 401)
 
 Acme audit events (oldest first):
-  #44   member_added           actor=22eff9ac request_id=d5dca9230b1348eea2ff17d65f100c1a {'via': 'org_created', 'role': 'owner', 'user_id': '22eff9ac-eefe-4e9f-9c84-37cc4d069b30'}
-  #46   member_added           actor=22eff9ac request_id=68c108c258f24e279a1b1a600f6fee0d {'role': 'viewer', 'user_id': 'efede4ff-4b13-48ea-81ef-8c3ae15abf15'}
-  #47   permission_denied      actor=5c0ed4ef request_id=demo-8d6d76-bola                 {'action': 'project.read', 'reason': 'not a member of the organisation', 'status': 404}
-  #48   permission_denied      actor=efede4ff request_id=demo-8d6d76-bfla                 {'action': 'document.update', 'reason': 'access read does not permit document.update', 'status': 403, 'document_id': '2fab8cf3-cb58-4696-ad0f-210d08ca8de0'}
+  #112  member_added           actor=e23979df request_id=845dda97863c4ca088c15cc26a1a919b {'via': 'org_created', 'role': 'owner', 'user_id': 'e23979df-9396-475e-8b09-a024935f7537'}
+  #114  invitation_created     actor=e23979df request_id=a8da8a53a2be474e9d7e2ff3c0027ca2 {'role': 'viewer', 'invitation_id': '3bfe0212-0214-4fb3-9de7-059517297d40'}
+  #115  permission_denied      actor=91e6ea9a request_id=c86803ffb0974963abbeb1d7e996d923 {'action': 'org.read', 'reason': 'not found or not visible', 'status': 404}
+  #116  member_added           actor=91e6ea9a request_id=8d49c485f2134b08a2be2722f757d4e6 {'via': 'invitation', 'role': 'viewer', 'user_id': '91e6ea9a-a8d5-461b-9147-80aeacbd0d86', 'invited_by': 'e23979df-9396-475e-8b09-a024935f7537'}
+  #117  permission_denied      actor=40f3c1cc request_id=demo-81aafd-bola                 {'action': 'project.read', 'reason': 'not found or not visible', 'status': 404}
+  #118  permission_denied      actor=91e6ea9a request_id=demo-81aafd-bfla                 {'action': 'document.update', 'reason': 'access read does not permit document.update', 'status': 403, 'document_id': '1553a913-4653-44f4-92ac-a85c89f4608d'}
 ```
 
 ## Examples
@@ -176,7 +179,8 @@ Endpoints:
 | `POST /auth/register`, `/auth/login`, `/auth/refresh`; `POST /auth/logout` | anyone; logout needs the access token |
 | `GET /me`, `GET /me/audit-events`, `GET /orgs`, `POST /orgs` | any authenticated user |
 | `GET /orgs/{org}`, `GET /orgs/{org}/members`, `GET /orgs/{org}/projects[/{project}]` | members |
-| `POST/PATCH/DELETE /orgs/{org}/members[/{user}]` | owner, admin (admins manage editors and viewers only) |
+| `PATCH/DELETE /orgs/{org}/members/{user}`; `POST/GET /orgs/{org}/invitations`, `DELETE /orgs/{org}/invitations/{id}` | owner, admin (admins manage and invite editors and viewers only) |
+| `POST /invitations/accept` | the invited user, with the token |
 | `POST/PATCH/DELETE /orgs/{org}/projects[/{project}]`, `GET /orgs/{org}/audit-events` | owner, admin |
 | `POST /orgs/{org}/projects/{project}/documents` | owner, admin, editor |
 | `GET/PATCH/DELETE …/documents/{doc}`, `PUT/DELETE …/documents/{doc}/shares/{user}` | per document, see `policy.py` |
@@ -192,7 +196,7 @@ uv run mypy src
 uv run pytest -q
 ```
 
-`uv run pytest --collect-only -q` reports 469 tests at the time of writing. The suite
+`uv run pytest --collect-only -q` reports 487 tests at the time of writing. The suite
 drops and re-creates a database named `apiguard_test` on the compose server from the Alembic
 migrations (set `APIGUARD_TEST_DATABASE_URL` to use another server).
 
@@ -220,10 +224,13 @@ PostgreSQL 17 service container.
 
 ## Limitations
 
-- Registration answers 409 for an email that is already registered, and adding a member by
-  email answers 404 for an unknown email (to owners and admins only). Both reveal whether an
-  address has an account; fixing that needs an email verification and invitation flow, which is
-  not built. Registration is rate limited per IP.
+- Registration answers 409 for an email that is already registered, which reveals whether an
+  address has an account. It is rate limited per IP; removing it needs email verification,
+  which is not built.
+- Emails are not verified, so whoever registers an address first owns it. An invitation can
+  only be accepted with its one-time token *and* that email, so squatting an invited address
+  is not enough on its own, but the token travels outside the API (the inviter receives it
+  in the response and passes it on; a real deployment would email it).
 - Per-account throttling means an attacker who knows an email can keep that account at 429 for
   as long as they keep sending attempts (bounded by their per-IP limit). This is the usual
   trade-off of throttling by account.
@@ -241,9 +248,12 @@ PostgreSQL 17 service container.
   demoting each other at the same moment cannot both succeed. Only the sequential case is
   tested; an attempt at a threaded test did not reliably overlap the two requests, so it was
   not kept.
-- Every denied request writes one audit row, and only login, refresh and registration are rate
-  limited. An authenticated user can therefore grow the audit table by probing; a general
-  per-user request limit is not built.
+- Some database growth is bounded by rate, not by size. Each failed login writes one
+  `login_failed` row (at most the per-IP and per-account limits per window), each successful
+  registration one user, and each denied authenticated request one `permission_denied` row
+  (authenticated endpoints other than invitations are not rate limited). Rejected 429
+  requests write one `rate_limited` row per key per window, and `rate_limit_counters` holds
+  only the current window. Audit retention and archiving are left to the operator.
 - The Examples section registers `carol@example.com`; running it a second time against the same
   database answers 409 for that step.
 - The append-only trigger does not stop `TRUNCATE` or a superuser disabling triggers; database
@@ -252,7 +262,8 @@ PostgreSQL 17 service container.
 ## Future work
 
 - Asymmetric signing (EdDSA or ES256) with `kid` and a published key set, so keys can rotate.
-- Email verification and invitations to remove the two enumeration points above.
+- Email verification, and emailing invitation tokens instead of returning them.
+- A general per-user request limit for authenticated endpoints.
 - A sliding-window or token-bucket limiter, and an optional Redis backend.
 - A Dockerfile and a compose service for the API itself, with a least-privilege database role
   that has only INSERT and SELECT on `audit_events`.

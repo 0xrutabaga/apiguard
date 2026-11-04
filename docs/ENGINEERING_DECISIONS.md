@@ -31,7 +31,7 @@ but not allowed into 403.
 
 ## 3. Tenant scoping in the query, not only in the policy
 
-`authz.load_project` and `authz.load_document` always filter by the org (and project) in the URL.
+`authz.load_project` and `authz.authorize_document` always filter by the org (and project) in the URL.
 
 - Why: defence in depth. If a future handler forgot to call `authorize`, a foreign id would
   still not load. The policy then decides about a row that is already known to be in the right
@@ -87,9 +87,10 @@ See the module docstring in `src/apiguard/refresh.py`.
   the lookup can use a unique index on the hash.
 - Reuse detection: a used token presented again means two parties hold it. Revoking the family
   logs out the thief and the user; the user has to log in again, the thief cannot.
-- Concurrency: `rotate` locks the row with `SELECT ... FOR UPDATE`. Two simultaneous refreshes
-  with the same token produce one success and one reuse
-  (`test_concurrent_refresh_with_the_same_token_lets_exactly_one_win`). A client that retries a
+- Concurrency: `rotate` locks the row with `SELECT ... FOR UPDATE`. Of two simultaneous
+  refreshes with the same token, the second is treated as reuse and revokes the whole family,
+  including the token the first one just got
+  (`test_concurrent_refresh_with_the_same_token_revokes_the_family`). A client that retries a
   refresh after a network error will therefore be logged out. Some systems allow a short grace
   period for this; apiguard chooses the strict behaviour and documents it.
 - Each family also has an absolute expiry (`refresh_family_max_age_seconds`, default 30 days)
@@ -163,3 +164,39 @@ not exist elsewhere. The test database is created from the Alembic migrations, n
 `test_models_and_migrations_have_no_drift` fails if the models change without a migration.
 The suite lowers Argon2 cost for speed (`tests/conftest.py::_cheap_password_hashing`); the
 production parameters are checked separately in `tests/unit/test_passwords.py`.
+
+## 14. Membership by invitation, with a token
+
+`src/apiguard/routers/invitations.py`. Owners and admins invite an *email*; the invitee joins
+by calling `POST /invitations/accept` with a one-time token while logged in with that email.
+
+- Why not "add member by email": any user can create an organisation and become its owner, so
+  an add-by-email endpoint that answers differently for unknown emails is an account oracle,
+  and adding people without consent puts them into organisations they never chose.
+- The create endpoint never looks up the user, so its response and its queries are the same
+  for registered and unregistered emails, and it returns no display name.
+- Why a token and not only the email: registration does not verify email ownership, so
+  "accept if your account has the invited email" would let whoever registers the address
+  first take the invitation. The token (256 random bits, stored as SHA-256, replaced on
+  re-invite, expiring after `invitation_ttl_seconds`) proves receipt; the email check stops a
+  forwarded or leaked token being used by anyone else. Unknown, expired and wrong-email tokens
+  get one identical 404.
+- Cost: the token is returned to the inviter, who has to pass it on. A real deployment would
+  email it instead; that is future work.
+
+## 15. One audit row for "missing" and "not visible"
+
+Callers can read their own audit events (`GET /me/audit-events`). If a denied read of an
+existing-but-invisible document wrote a row and a missing id did not, or the two rows gave
+different reasons, the audit trail would tell the caller which ids exist. Both now go through
+`authz.authorize_document` / `authz.deny_not_found` and write the same row: action, status 404,
+reason "not found or not visible", and the id the caller supplied. The policy's own reason is
+stored only for 403s, where the caller already knows the resource exists.
+
+## 16. Database errors map by kind
+
+`app.py`: `IntegrityError` (a uniqueness or foreign key race lost to a concurrent request)
+becomes 409; `OperationalError` and `InterfaceError` (connection, timeout, deadlock) become
+503; any other driver error becomes a generic 500. None of them returns driver text. The race
+test in `tests/integration/test_database_errors.py` is deterministic: it holds a competing
+insert open in another transaction, so the request blocks on the primary key and then loses.

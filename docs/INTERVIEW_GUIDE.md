@@ -21,7 +21,7 @@ Answer:
   1. `authz.authorize_org` (`src/apiguard/authz.py`) resolves the caller's membership in the
      URL's `org_id`. No membership means `Decision(visible=False)` from `policy.decide`, which
      `authz.enforce` turns into 404 and an audit event.
-  2. `authz.load_document` selects by `id`, `org_id` and `project_id` together. A handler that
+  2. `authz.authorize_document` selects by `id`, `org_id` and `project_id` together. A handler that
      skipped step 1 would still get 404 for a foreign id, because the row does not match the
      org in the URL.
   3. The schema: `documents (project_id, org_id)` references `projects (id, org_id)`, and
@@ -43,15 +43,15 @@ Live: the demo line "bob (Globex owner) reads Acme's document by its real id -> 
 uv run pytest tests/security/test_api1_bola.py -v
 ```
 
-Break it on purpose (then `git checkout src`):
+Break it on purpose (keep a copy of `src/apiguard/authz.py` and restore it afterwards):
 
-- Delete the `Document.org_id == org_id,` line in `src/apiguard/authz.py::load_document`.
-  Every test in `tests/security/test_api1_bola.py` still passes: the project filter and the
-  policy each still stop the cross-tenant read.
-- Also delete the `authorize(...)` call in `src/apiguard/routers/projects.py::get_document`.
-  Now three tests fail, including `test_foreign_project_id_under_own_org_url_is_404` and
-  `test_intra_tenant_private_document_is_invisible_to_other_editor`. Only when two independent
-  layers are gone does the suite go red, and it says which attack got through.
+- Delete the `Document.org_id == org_id,` line in `authz.authorize_document`. Every test in
+  `tests/security/test_api1_bola.py` still passes: the project filter and the policy each
+  still stop the cross-tenant read.
+- Also delete the `authorize(...)` call at the end of `authz.authorize_document`. Now four
+  tests fail, including `test_foreign_project_id_under_own_org_url_is_404` and
+  `test_intra_tenant_private_document_is_invisible_to_other_editor`. The suite only goes red
+  when two independent layers are gone, and it says which attack got through.
 
 ---
 
@@ -69,8 +69,9 @@ Answer (`src/apiguard/refresh.py::rotate`):
   and only the one with the password can log in again.
 - Only SHA-256 of the token is stored. The token has 256 bits of entropy, so a slow hash adds
   nothing; a fast hash lets the lookup use a unique index.
-- Two tabs at once: the row lock serialises them; one wins and the other is treated as reuse,
-  so the user is logged out. That is the strict choice. A grace window for the previous token
+- Two tabs at once: the row lock serialises them. The first rotates; the second sees a used
+  token and is treated as reuse, which revokes the family, including the token the first tab
+  just received. Net effect: the user is logged out. That is the strict choice. A grace window for the previous token
   would avoid it at the cost of giving a thief the same window. I chose strict and documented
   it (docs/ENGINEERING_DECISIONS.md, section 7).
 
@@ -78,7 +79,7 @@ Live:
 
 ```bash
 uv run pytest "tests/security/test_api2_broken_authentication.py::test_refresh_token_reuse_revokes_the_whole_family" \
-  "tests/security/test_api2_broken_authentication.py::test_concurrent_refresh_with_the_same_token_lets_exactly_one_win" -v
+  "tests/security/test_api2_broken_authentication.py::test_concurrent_refresh_with_the_same_token_revokes_the_family" -v
 ```
 
 The demo's "Authentication" block shows the same sequence over HTTP, and the
@@ -100,9 +101,11 @@ Answer:
 - What I do not claim: that response times are statistically indistinguishable. The user lookup
   by email and the audit write still differ slightly. I did not measure timing, because a
   timing test on shared CI runners would be flaky; the README lists this as a limitation.
-- Other enumeration points remain and are documented: registration returns 409 for a taken
-  email, and adding a member by unknown email returns 404 to managers. Closing those needs an
-  email verification and invitation flow.
+- Membership goes through invitations, which look nothing up and return the same fields for
+  any email (`routers/invitations.py::create_invitation`), so "create an org, then probe
+  emails" does not work; the invitee has to accept with the one-time token.
+- One enumeration point remains and is documented: registration returns 409 for a taken
+  email. Closing it needs email verification.
 
 Live:
 

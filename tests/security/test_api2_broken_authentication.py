@@ -148,10 +148,15 @@ def test_reuse_in_one_family_does_not_affect_other_sessions(
     assert client.post("/auth/refresh", json={"refresh_token": phone}).status_code == 200
 
 
-def test_concurrent_refresh_with_the_same_token_lets_exactly_one_win(
+def test_concurrent_refresh_with_the_same_token_revokes_the_family(
     world: World, db: sessionmaker[Session]
 ) -> None:
-    """Row locking (SELECT ... FOR UPDATE) serialises the two refreshes in PostgreSQL."""
+    """Two refreshes with one token: the row lock (SELECT ... FOR UPDATE) serialises them.
+
+    The first rotates; the second sees a used token, which is the reuse signal, and revokes
+    the family, including the token the first one just received. Two browser tabs refreshing
+    at once therefore log the user out; that is the price of having no grace window.
+    """
     with db.begin() as session:
         issued = refresh.start_family(session, world.settings, world.uid("a_viewer"))
 
