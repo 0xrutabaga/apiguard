@@ -1,0 +1,21 @@
+# Local development database only. The credentials below are throwaway values for a
+# container bound to localhost; never reuse them for a shared or production database.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: apiguard
+      POSTGRES_PASSWORD: apiguard
+      POSTGRES_DB: apiguard
+    ports:
+      - "127.0.0.1:55431:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apiguard -d apiguard"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - apiguard-pgdata:/var/lib/postgresql/data
+
+volumes:
+  apiguard-pgdata:
