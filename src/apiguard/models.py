@@ -127,7 +127,10 @@ class Document(Base):
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = _now_column()
-    updated_at: Mapped[datetime] = _now_column()
+    # Set by the database on every UPDATE (database clock, like created_at).
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
 
 
 class DocumentShare(Base):

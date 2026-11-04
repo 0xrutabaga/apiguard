@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -228,7 +227,6 @@ def update_document(
     for field in ("title", "body"):
         if field in changes:
             setattr(document, field, changes[field])
-    document.updated_at = datetime.now(UTC)
     session.commit()
     return document
 
