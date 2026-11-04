@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
-from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import DBAPIError, IntegrityError, InterfaceError, OperationalError
 
 from apiguard.config import Settings
 from apiguard.db import build_engine, build_session_factory
@@ -40,14 +40,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.session_factory = session_factory
     app.state.rate_limiter = RateLimiter(session_factory, settings.rate_limit_window_seconds)
 
+    # Starlette picks the handler for the most specific class in the exception's MRO.
+    @app.exception_handler(IntegrityError)
+    async def integrity_conflict(request: Request, exc: Exception) -> JSONResponse:
+        # A uniqueness or foreign key race lost against a concurrent request.
+        logger.warning("integrity error on %s %s: %s", request.method, request.url.path, exc)
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": "conflict"})
+
     @app.exception_handler(OperationalError)
-    @app.exception_handler(DBAPIError)
+    @app.exception_handler(InterfaceError)
     async def database_unavailable(request: Request, exc: Exception) -> JSONResponse:
-        # Do not leak driver messages (hostnames, SQL) to clients.
-        logger.error("database error on %s %s: %s", request.method, request.url.path, exc)
+        # Connection failures, timeouts, deadlocks. Do not leak driver messages to clients.
+        logger.error("database unavailable on %s %s: %s", request.method, request.url.path, exc)
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={"detail": "service unavailable"},
+        )
+
+    @app.exception_handler(DBAPIError)
+    async def database_error(request: Request, exc: Exception) -> JSONResponse:
+        logger.error("database error on %s %s: %s", request.method, request.url.path, exc)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "internal error"},
         )
 
     @app.get("/healthz", tags=["health"])
