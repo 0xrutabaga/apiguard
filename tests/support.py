@@ -16,10 +16,10 @@ from apiguard.tokens import issue_access_token
 TEST_PASSWORD = "correct horse battery staple"
 
 
-def make_settings(database_url: str, **overrides: object) -> Settings:
+def make_settings(default_database_url: str, **overrides: object) -> Settings:
     values: dict[str, object] = {
         "environment": "test",
-        "database_url": database_url,
+        "database_url": default_database_url,
         "jwt_signing_key": secrets.token_urlsafe(48),
         # Generous limits so only the rate-limit tests hit them.
         "login_limit_per_ip": 1000,
